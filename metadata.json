@@ -1,0 +1,6 @@
+{
+  "name": "ChatPro - Identity Verification & Messaging",
+  "description": "ChatPro messaging platform with National Identity Card (NIC) verification, privacy agreement, and secure communications.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
