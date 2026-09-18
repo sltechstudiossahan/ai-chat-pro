@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>ChatPro - Premium Messaging & Identity Verification</title>
+    <title>ChatPro - Identity Verification & Messaging</title>
+    <meta name="description" content="ChatPro messaging platform with National Identity Card (NIC) verification, privacy agreement, and secure communications." />
     <meta name="chatpro-backend" content="Supabase">
 <link rel="icon" type="image/png" href="ChatGPT Image Sep 15, 2026, 07_31_07 PM.png">
 <link rel="apple-touch-icon" href="ChatGPT Image Sep 15, 2026, 07_31_07 PM.png">
@@ -2427,10 +2428,10 @@ input,textarea,.search-box{background:rgba(255,255,255,.055)!important;border-co
         </div>
         
         <div class="auth-demo">
-            <div class="label"><i class="fas fa-crown" style="color:#ffd700;margin-right:6px;"></i> Admin Demo</div>
+            <div class="label"><i class="fas fa-crown" style="color:#ffd700;margin-right:6px;"></i> Admin Demo (Click to sign in)</div>
             <div class="accounts">
-                <span>admin1@chatapp.com</span>
-                <span>admin2@chatapp.com</span>
+                <span class="admin-quick-fill" data-email="admin1@chatapp.com" data-pass="admin123" style="cursor:pointer;" title="Click to fill admin1 credentials">admin1@chatapp.com</span>
+                <span class="admin-quick-fill" data-email="admin2@chatapp.com" data-pass="admin123" style="cursor:pointer;" title="Click to fill admin2 credentials">admin2@chatapp.com</span>
                 <span style="color:var(--text-muted);font-size:11px;">pass: admin123</span>
             </div>
         </div>
@@ -3203,7 +3204,7 @@ async function ensureProfileForUser(user) {
     let profile = await getUserData(user.id);
 
     if (!profile) {
-        const { error } = await supabaseClient.from('profiles').upsert({
+        const payload = {
             id: user.id,
             email,
             name: admin ? admin.name : email.split('@')[0],
@@ -3213,12 +3214,18 @@ async function ensureProfileForUser(user) {
             is_admin: !!admin,
             nic_captured: !!admin,
             profile_setup: true,
-            identity_status: admin ? 'verified' : 'pending',
-            nic_verified: !!admin,
-            liveness_verified: !!admin,
-            account_active: true
-        }, { onConflict: 'id' });
-        if (error) throw error;
+            nic_details: {
+                identity_status: admin ? 'verified' : 'pending',
+                nic_verified: !!admin,
+                liveness_verified: !!admin,
+                account_active: true
+            }
+        };
+        const { error } = await supabaseClient.from('profiles').upsert(payload, { onConflict: 'id' });
+        if (error) {
+            console.error('ensureProfileForUser upsert error:', error);
+            throw error;
+        }
         profile = await getUserData(user.id);
     } else if (admin && (!profile.isAdmin || !profile.accountActive || profile.identityStatus !== 'verified')) {
         await saveProfilePatch(user.id, {
@@ -3245,8 +3252,15 @@ authBtn.addEventListener('click', async () => {
     if (!email || !password) { authError.textContent = 'Please fill in all fields.'; return; }
     if (password.length < 6) { authError.textContent = 'Password must be at least 6 characters.'; return; }
 
-    // Privacy Agreement consent check for new account registrations
-    if (!isLoginMode && authPrivacyCheckbox && !authPrivacyCheckbox.checked) {
+    const admin = ADMIN_ACCOUNTS.find(a => a.email === email);
+
+    // If an admin email is entered, automatically ensure we are in login mode
+    if (admin && !isLoginMode) {
+        toggleAuthMode();
+    }
+
+    // Privacy Agreement consent check for new account registrations (non-admin)
+    if (!isLoginMode && !admin && authPrivacyCheckbox && !authPrivacyCheckbox.checked) {
         authError.textContent = 'You must read and agree to the NIC Verification Privacy Policy & Legal Agreement to create an account.';
         return;
     }
@@ -3256,10 +3270,22 @@ authBtn.addEventListener('click', async () => {
 
     try {
         await requireSupabase();
-        const admin = ADMIN_ACCOUNTS.find(a => a.email === email);
 
-        if (isLoginMode) {
-            const result = await supabaseClient.auth.signInWithPassword({ email, password });
+        if (isLoginMode || admin) {
+            let result = await supabaseClient.auth.signInWithPassword({ email, password });
+
+            // If admin login fails because the account doesn't exist yet in Supabase Auth, auto-create it
+            if (result.error && admin && /invalid login credentials|user not found/i.test(result.error.message || '')) {
+                const upResult = await supabaseClient.auth.signUp({
+                    email,
+                    password,
+                    options: { data: { display_name: admin.name } }
+                });
+                if (!upResult.error && upResult.data?.user) {
+                    result = await supabaseClient.auth.signInWithPassword({ email, password });
+                }
+            }
+
             if (result.error) throw result.error;
             if (!result.data?.user) throw new Error('Login succeeded but no user account was returned.');
 
@@ -3305,7 +3331,7 @@ authBtn.addEventListener('click', async () => {
         authError.className = 'error-msg';
         const msg = String(err?.message || 'Authentication failed.');
         if (/invalid login credentials/i.test(msg)) {
-            authError.textContent = 'Invalid email or password. If this is an admin account, create it once using Create Account first, then log in.';
+            authError.textContent = 'Invalid email or password. If this is an admin account, click the demo badge below or check password.';
         } else if (/already registered|already exists|user already registered/i.test(msg)) {
             authError.textContent = 'This email is already registered. Switch to Login.';
         } else {
@@ -3317,6 +3343,25 @@ authBtn.addEventListener('click', async () => {
             ? '<span class="btn-content"><i class="fas fa-sign-in-alt"></i> Login</span>'
             : '<span class="btn-content"><i class="fas fa-user-plus"></i> Create Account</span>';
     }
+});
+
+// Setup click-to-fill for admin demo credentials and Enter key support
+document.querySelectorAll('.admin-quick-fill').forEach(el => {
+    el.addEventListener('click', () => {
+        authEmail.value = el.dataset.email || '';
+        authPassword.value = el.dataset.pass || '';
+        if (!isLoginMode) toggleAuthMode();
+        authError.textContent = '';
+        authBtn.click();
+    });
+});
+
+[authEmail, authPassword].forEach(input => {
+    input?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            authBtn.click();
+        }
+    });
 });
 
 // ============================================================
@@ -3568,6 +3613,18 @@ async function requireSupabase() {
 
 function rowToUser(row) {
     if (!row) return null;
+    let details = {};
+    if (row.nic_details && typeof row.nic_details === 'object') {
+        details = row.nic_details;
+    } else if (typeof row.nic_details === 'string') {
+        try { details = JSON.parse(row.nic_details); } catch (_) { details = {}; }
+    }
+
+    const email = String(row.email || '').trim().toLowerCase();
+    const isAdm = !!row.is_admin || isEmailAdmin(email);
+    const idStatus = row.identity_status || details.identity_status || (isAdm ? 'verified' : (row.nic_captured ? 'verified' : 'pending'));
+    const isVerified = isAdm || idStatus === 'verified' || !!row.nic_captured;
+
     return {
         uid: row.id,
         id: row.id,
@@ -3576,31 +3633,32 @@ function rowToUser(row) {
         emoji: row.emoji,
         about: row.about,
         nicNumber: row.nic_number || '',
-        nicDetails: row.nic_details || null,
+        nicDetails: details,
         contacts: Array.isArray(row.contacts) ? row.contacts : [],
-        isAdmin: !!row.is_admin,
+        isAdmin: isAdm,
         createdAt: row.created_at,
-        nicCaptured: !!row.nic_captured,
+        nicCaptured: !!row.nic_captured || isAdm,
         profileSetup: !!row.profile_setup,
         profilePhoto: row.profile_photo || null,
-        nicPhotoPath: row.nic_photo_path || null,
-        nicPhotoUrl: row.nic_photo_url || null,
-        identityStatus: row.identity_status || 'pending',
-        identityApplicantId: row.identity_applicant_id || null,
-        identityVerifiedAt: row.identity_verified_at || null,
-        nicVerified: !!row.nic_verified,
-        livenessVerified: !!row.liveness_verified,
-        accountActive: !!row.account_active,
+        nicPhotoPath: row.nic_photo_path || details.nic_photo_path || null,
+        nicPhotoUrl: row.nic_photo_url || details.nic_photo_url || null,
+        identityStatus: isAdm ? 'verified' : idStatus,
+        identityApplicantId: row.identity_applicant_id || details.identity_applicant_id || null,
+        identityVerifiedAt: row.identity_verified_at || details.identity_verified_at || null,
+        nicVerified: isAdm ? true : (('nic_verified' in row) ? !!row.nic_verified : (details.nic_verified !== undefined ? !!details.nic_verified : isVerified)),
+        livenessVerified: isAdm ? true : (('liveness_verified' in row) ? !!row.liveness_verified : (details.liveness_verified !== undefined ? !!details.liveness_verified : isVerified)),
+        accountActive: isAdm ? true : (('account_active' in row) ? !!row.account_active : (details.account_active !== undefined ? !!details.account_active : true)),
         lockedChats: Array.isArray(row.locked_chats) ? row.locked_chats : [],
         contactListLocked: !!row.contact_list_locked,
         lockPasswordHash: row.lock_password_hash || null,
         autoReplyEnabled: !!row.auto_reply_enabled,
         autoReplyText: row.auto_reply_text || '',
-        chatMemory: Array.isArray(row.chat_memory) ? row.chat_memory : [],
-        chatReminders: Array.isArray(row.chat_reminders) ? row.chat_reminders : [],
-        chatRecurring: Array.isArray(row.chat_recurring) ? row.chat_recurring : [],
-        presenceState: row.presence_state || 'available',
-        presenceVisible: row.presence_visible !== false
+        chatMemory: Array.isArray(row.chat_memory) ? row.chat_memory : (Array.isArray(details.chat_memory) ? details.chat_memory : []),
+        chatReminders: Array.isArray(row.chat_reminders) ? row.chat_reminders : (Array.isArray(details.chat_reminders) ? details.chat_reminders : []),
+        chatRecurring: Array.isArray(row.chat_recurring) ? row.chat_recurring : (Array.isArray(details.chat_recurring) ? details.chat_recurring : []),
+        presenceState: row.presence_state || details.presence_state || 'available',
+        presenceVisible: row.presence_visible !== undefined ? row.presence_visible !== false : (details.presence_visible !== undefined ? details.presence_visible !== false : true),
+        lastSeen: row.last_seen || details.last_seen || null
     };
 }
 
@@ -3610,30 +3668,52 @@ function userToRowPatch(data) {
     if ('about' in data) patch.about = data.about;
     if ('emoji' in data) patch.emoji = data.emoji;
     if ('nicNumber' in data) patch.nic_number = data.nicNumber;
-    if ('nicDetails' in data) patch.nic_details = data.nicDetails;
     if ('contacts' in data) patch.contacts = data.contacts;
     if ('isAdmin' in data) patch.is_admin = data.isAdmin;
     if ('nicCaptured' in data) patch.nic_captured = data.nicCaptured;
     if ('profileSetup' in data) patch.profile_setup = data.profileSetup;
     if ('profilePhoto' in data) patch.profile_photo = data.profilePhoto;
-    if ('nicPhotoPath' in data) patch.nic_photo_path = data.nicPhotoPath;
-    if ('nicPhotoUrl' in data) patch.nic_photo_url = data.nicPhotoUrl;
-    if ('identityStatus' in data) patch.identity_status = data.identityStatus;
-    if ('identityApplicantId' in data) patch.identity_applicant_id = data.identityApplicantId;
-    if ('identityVerifiedAt' in data) patch.identity_verified_at = data.identityVerifiedAt;
-    if ('nicVerified' in data) patch.nic_verified = data.nicVerified;
-    if ('livenessVerified' in data) patch.liveness_verified = data.livenessVerified;
-    if ('accountActive' in data) patch.account_active = data.accountActive;
     if ('lockedChats' in data) patch.locked_chats = data.lockedChats;
     if ('contactListLocked' in data) patch.contact_list_locked = data.contactListLocked;
     if ('lockPasswordHash' in data) patch.lock_password_hash = data.lockPasswordHash;
     if ('autoReplyEnabled' in data) patch.auto_reply_enabled = data.autoReplyEnabled;
     if ('autoReplyText' in data) patch.auto_reply_text = data.autoReplyText;
-    if ('chatMemory' in data) patch.chat_memory = data.chatMemory;
-    if ('chatReminders' in data) patch.chat_reminders = data.chatReminders;
-    if ('chatRecurring' in data) patch.chat_recurring = data.chatRecurring;
-    if ('presenceState' in data) patch.presence_state = data.presenceState;
-    if ('presenceVisible' in data) patch.presence_visible = data.presenceVisible;
+
+    const detailsKeys = [
+        'nicDetails', 'identityStatus', 'identityApplicantId', 'identityVerifiedAt',
+        'nicVerified', 'livenessVerified', 'accountActive', 'nicPhotoPath', 'nicPhotoUrl',
+        'chatMemory', 'chatReminders', 'chatRecurring', 'presenceState', 'presenceVisible',
+        'nic_privacy_accepted', 'nic_privacy_accepted_at', 'lastSeen'
+    ];
+
+    const hasDetails = detailsKeys.some(k => k in data);
+    if (hasDetails) {
+        const currentDetails = (currentUserData && typeof currentUserData.nicDetails === 'object' && currentUserData.nicDetails !== null)
+            ? { ...currentUserData.nicDetails }
+            : {};
+        const merged = { ...currentDetails };
+        if ('nicDetails' in data && data.nicDetails && typeof data.nicDetails === 'object') {
+            Object.assign(merged, data.nicDetails);
+        }
+        if ('identityStatus' in data) merged.identity_status = data.identityStatus;
+        if ('identityApplicantId' in data) merged.identity_applicant_id = data.identityApplicantId;
+        if ('identityVerifiedAt' in data) merged.identity_verified_at = data.identityVerifiedAt;
+        if ('nicVerified' in data) merged.nic_verified = data.nicVerified;
+        if ('livenessVerified' in data) merged.liveness_verified = data.livenessVerified;
+        if ('accountActive' in data) merged.account_active = data.accountActive;
+        if ('nicPhotoPath' in data) merged.nic_photo_path = data.nicPhotoPath;
+        if ('nicPhotoUrl' in data) merged.nic_photo_url = data.nicPhotoUrl;
+        if ('chatMemory' in data) merged.chat_memory = data.chatMemory;
+        if ('chatReminders' in data) merged.chat_reminders = data.chatReminders;
+        if ('chatRecurring' in data) merged.chat_recurring = data.chatRecurring;
+        if ('presenceState' in data) merged.presence_state = data.presenceState;
+        if ('presenceVisible' in data) merged.presence_visible = data.presenceVisible;
+        if ('nic_privacy_accepted' in data) merged.nic_privacy_accepted = data.nic_privacy_accepted;
+        if ('nic_privacy_accepted_at' in data) merged.nic_privacy_accepted_at = data.nic_privacy_accepted_at;
+        if ('lastSeen' in data) merged.last_seen = data.lastSeen;
+
+        patch.nic_details = merged;
+    }
     return patch;
 }
 
@@ -3799,7 +3879,6 @@ async function refreshContactPreviews(){
 async function presenceHeartbeat(){
     if(!currentUser||!supabaseClient)return;
     try{
-        await supabaseClient.from('profiles').update({last_seen:new Date().toISOString()}).eq('id',currentUser.id);
         if(currentUserData) currentUserData.lastSeen=new Date().toISOString();
     }catch(e){console.warn('Presence heartbeat failed:',e.message)}
 }
@@ -3813,57 +3892,67 @@ function startPresenceHeartbeat(){
 async function loadChat() {
     if (!currentUser) return;
 
-    currentUserData = await getUserData(currentUser.id);
-    if (!currentUserData) return;
-    startPresenceHeartbeat();
+    try {
+        currentUserData = await getUserData(currentUser.id);
+        if (!currentUserData) {
+            currentUserData = await ensureProfileForUser(currentUser);
+        }
+        if (!currentUserData) return;
+        startPresenceHeartbeat();
 
-    isAdmin = currentUserData.isAdmin || ADMIN_ACCOUNTS.some(a => a.email === currentUser.email);
+        const email = String(currentUserData.email || currentUser.email || '').toLowerCase();
+        isAdmin = !!currentUserData.isAdmin || isEmailAdmin(email);
 
-    const displayName = currentUserData.name || currentUser.email.split('@')[0];
-    const displayEmoji = currentUserData.emoji || '😊';
-    currentUserName.textContent = displayName;
+        const displayName = currentUserData.name || currentUser.email.split('@')[0];
+        const displayEmoji = currentUserData.emoji || '😊';
+        currentUserName.textContent = displayName;
 
-    if (currentUserData.profilePhoto) {
-        headerAvatar.innerHTML = `<img src="${currentUserData.profilePhoto}" alt="Profile" />`;
-    } else {
-        headerAvatar.textContent = displayEmoji;
-    }
-
-    roleBadge.textContent = isAdmin ? 'Admin' : 'User';
-    roleBadge.className = `role-badge ${isAdmin ? 'admin' : 'user'}`;
-
-    if (isAdmin) {
-        adminPanel.classList.remove('hidden');
-        updateAdminStats();
-    } else {
-        adminPanel.classList.add('hidden');
-    }
-
-    contacts = Array.isArray(currentUserData.contacts) ? currentUserData.contacts : [];
-    lockedChats = {}; (currentUserData.lockedChats || []).forEach(e => lockedChats[String(e).toLowerCase()] = true);
-    contactsListLocked = !!currentUserData.contactListLocked;
-    autoReplyEnabled = !!currentUserData.autoReplyEnabled; autoReplyTextValue = currentUserData.autoReplyText || '';
-    applyPrivacyUI();
-    await syncContactProfilesOnce();
-    await refreshContactPreviews();
-    await discoverUnknownChats();
-    await refreshContactPreviews();
-    renderContacts();
-    startContactProfileWatchers();
-
-    if (currentChatWith) {
-        const exists = contacts.some(c => c.email === currentChatWith) || !!unknownChats[currentChatWith];
-        if (exists) {
-            loadMessages(currentChatWith);
-            displayContactProfile(currentChatWith);
-            messageInput.disabled = false;
-            sendBtn.disabled = false;
+        if (currentUserData.profilePhoto) {
+            headerAvatar.innerHTML = `<img src="${currentUserData.profilePhoto}" alt="Profile" />`;
         } else {
-            currentChatWith = null;
+            headerAvatar.textContent = displayEmoji;
+        }
+
+        roleBadge.textContent = isAdmin ? 'Admin' : 'User';
+        roleBadge.className = `role-badge ${isAdmin ? 'admin' : 'user'}`;
+
+        if (isAdmin) {
+            adminPanel.classList.remove('hidden');
+            updateAdminStats().catch(err => console.warn('Admin stats update error:', err));
+        } else {
+            adminPanel.classList.add('hidden');
+        }
+
+        contacts = Array.isArray(currentUserData.contacts) ? currentUserData.contacts : [];
+        lockedChats = {}; (currentUserData.lockedChats || []).forEach(e => lockedChats[String(e).toLowerCase()] = true);
+        contactsListLocked = !!currentUserData.contactListLocked;
+        autoReplyEnabled = !!currentUserData.autoReplyEnabled; autoReplyTextValue = currentUserData.autoReplyText || '';
+        applyPrivacyUI();
+
+        try { await syncContactProfilesOnce(); } catch (_) {}
+        try { await refreshContactPreviews(); } catch (_) {}
+        try { await discoverUnknownChats(); } catch (_) {}
+        try { await refreshContactPreviews(); } catch (_) {}
+
+        renderContacts();
+        startContactProfileWatchers();
+
+        if (currentChatWith) {
+            const exists = contacts.some(c => c.email === currentChatWith) || !!unknownChats[currentChatWith] || currentChatWith === AI_BOT_EMAIL;
+            if (exists) {
+                loadMessages(currentChatWith);
+                displayContactProfile(currentChatWith);
+                messageInput.disabled = false;
+                sendBtn.disabled = false;
+            } else {
+                currentChatWith = null;
+                showWelcomeChat();
+            }
+        } else {
             showWelcomeChat();
         }
-    } else {
-        showWelcomeChat();
+    } catch (err) {
+        console.error('Error in loadChat:', err);
     }
 }
 
@@ -5266,15 +5355,18 @@ window.adminViewUsers=async function(){
 window.adminInspectUser=async function(id){
     if(!adminGuard()) return; const {data,error}=await supabaseClient.from('profiles').select('*').eq('id',id).maybeSingle();
     if(error||!data){alert(error?.message||'User not found.');return;}
-    alert([`Name: ${data.name||'—'}`,`Email: ${data.email||'—'}`,`Role: ${data.is_admin?'Admin':'User'}`,`NIC: ${data.nic_number||'—'}`,`NIC captured: ${data.nic_captured?'Yes':'No'}`,`NIC image: ${data.nic_photo_path?'Saved as image file':'Not saved'}`,`About: ${data.about||'—'}`,`Created: ${data.created_at?new Date(data.created_at).toLocaleString():'—'}`].join('\n'));
+    const u = rowToUser(data);
+    alert([`Name: ${u.name||'—'}`,`Email: ${u.email||'—'}`,`Role: ${u.isAdmin?'Admin':'User'}`,`NIC: ${u.nicNumber||'—'}`,`NIC captured: ${u.nicCaptured?'Yes':'No'}`,`NIC image: ${u.nicPhotoPath?'Saved as image file':'Not saved'}`,`About: ${u.about||'—'}`,`Created: ${u.createdAt?new Date(u.createdAt).toLocaleString():'—'}`].join('\n'));
 };
 
 window.adminViewNIC=async function(userId){
     if(!adminGuard()) return; adminNicError.textContent=''; adminNicImage.removeAttribute('src'); adminNicModal.classList.remove('hidden');
     try{
-        const {data:user,error}=await supabaseClient.from('profiles').select('name,email,nic_photo_path,nic_number').eq('id',userId).maybeSingle(); if(error) throw error;
-        if(!user?.nic_photo_path) throw new Error('No NIC image is stored for this account.');
-        const {data,error:signError}=await supabaseClient.storage.from(NIC_BUCKET).createSignedUrl(user.nic_photo_path,300); if(signError) throw signError;
+        const {data:user,error}=await supabaseClient.from('profiles').select('name,email,nic_details,nic_number').eq('id',userId).maybeSingle(); if(error) throw error;
+        const details = (user?.nic_details && typeof user.nic_details === 'object') ? user.nic_details : (typeof user?.nic_details === 'string' ? JSON.parse(user.nic_details||'{}') : {});
+        const photoPath = details.nic_photo_path || user?.nic_photo_path || null;
+        if(!photoPath) throw new Error('No NIC image is stored for this account.');
+        const {data,error:signError}=await supabaseClient.storage.from(NIC_BUCKET).createSignedUrl(photoPath,300); if(signError) throw signError;
         adminNicTitle.textContent=`${user.name||'User'} • ${user.email||''} • NIC ${user.nic_number||'—'}`; adminNicImage.src=data.signedUrl;
     }catch(err){adminNicError.textContent='Could not load NIC image: '+err.message;}
 };
