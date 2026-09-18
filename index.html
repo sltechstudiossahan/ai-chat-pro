@@ -5867,6 +5867,12 @@ if (supabaseClient) {
         try {
             const user = session?.user || null;
             if (!user) {
+                // Ignore the harmless startup check (event: INITIAL_SESSION with no
+                // saved session yet) and any other transient null-session events that
+                // aren't a real sign-out. Only react when Supabase explicitly reports
+                // SIGNED_OUT — otherwise this races with a fresh login and can bounce
+                // the user straight back to the login page right after they sign in.
+                if (_event !== 'SIGNED_OUT') return;
                 if (currentUser) {
                     stopContactProfileWatchers();
                     stopUnknownChatPolling();
